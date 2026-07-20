@@ -18,11 +18,19 @@ jobs:
         run: |
           cat .github/build_payload/snap_penalty_0_3_patch.part00 \
               .github/build_payload/snap_penalty_0_3_patch.part01 \
-              .github/build_payload/snap_penalty_0_3_patch.part02 \
+              .github/build_payload/snap_penalty_0_3_patch.part02a \
+              .github/build_payload/snap_penalty_0_3_patch.part02b \
+              .github/build_payload/snap_penalty_0_3_patch.part02c \
+              .github/build_payload/snap_penalty_0_3_patch.part02d \
+              .github/build_payload/snap_penalty_0_3_patch.part02e \
+              .github/build_payload/snap_penalty_0_3_patch.part02f \
+              .github/build_payload/snap_penalty_0_3_patch.part02g \
               .github/build_payload/snap_penalty_0_3_patch.part03 \
               .github/build_payload/snap_penalty_0_3_patch.part04 \
               .github/build_payload/snap_penalty_0_3_patch.part05 > /tmp/snap_penalty_patch.b64
+          echo "28b5ec29328d439a591eb575692e634f18f21d009758d20af74c8bac6cc349ad  /tmp/snap_penalty_patch.b64" | sha256sum -c -
           base64 --decode /tmp/snap_penalty_patch.b64 > /tmp/snap_penalty_patch.tgz
+          echo "986b1aced38c73a9c9175184bc68e11088cb68050c34a986757da022ffaed1dd  /tmp/snap_penalty_patch.tgz" | sha256sum -c -
           tar -xzf /tmp/snap_penalty_patch.tgz -C .
           grep "versionName" app/build.gradle
           test -f app/src/main/assets/sprite_atlas.png
