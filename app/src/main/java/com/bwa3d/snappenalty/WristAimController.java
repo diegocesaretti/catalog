@@ -40,33 +40,51 @@ public final class WristAimController implements SensorEventListener {
     public WristAimController(Context context, Listener listener) {
         this.context = context.getApplicationContext();
         this.listener = listener;
-        sensorManager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
 
-        Sensor gameRotation = sensorManager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-        if (gameRotation != null) {
-            rotationSensor = gameRotation;
-        } else {
-            rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        SensorManager manager = null;
+        Sensor selectedSensor = null;
+        try {
+            manager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
+            if (manager != null) {
+                selectedSensor = manager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+                if (selectedSensor == null) {
+                    selectedSensor = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+                }
+            }
+        } catch (Throwable ignored) {
+            manager = null;
+            selectedSensor = null;
         }
+        sensorManager = manager;
+        rotationSensor = selectedSensor;
     }
 
     public boolean isAvailable() {
-        return rotationSensor != null;
+        return sensorManager != null && rotationSensor != null;
     }
 
     public void start() {
-        if (running || rotationSensor == null) {
+        if (running || sensorManager == null || rotationSensor == null) {
             return;
         }
-        running = sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+        try {
+            running = sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+        } catch (Throwable ignored) {
+            running = false;
+        }
     }
 
     public void stop() {
-        if (!running) {
+        if (!running || sensorManager == null) {
             return;
         }
-        sensorManager.unregisterListener(this);
-        running = false;
+        try {
+            sensorManager.unregisterListener(this);
+        } catch (Throwable ignored) {
+            // Sensor shutdown should not terminate the game.
+        } finally {
+            running = false;
+        }
     }
 
     public void calibrate() {
@@ -79,7 +97,11 @@ public final class WristAimController implements SensorEventListener {
         filteredX = 0f;
         filteredY = 0f;
         calibrated = true;
-        listener.onAimChanged(0f, 0f, motionIntensity);
+        try {
+            listener.onAimChanged(0f, 0f, motionIntensity);
+        } catch (Throwable ignored) {
+            // Ignore a stale view callback during an activity transition.
+        }
     }
 
     public float getMotionIntensity() {
@@ -92,67 +114,77 @@ public final class WristAimController implements SensorEventListener {
 
     @Override
     public void onSensorChanged(SensorEvent event) {
-        if (event.sensor.getType() != Sensor.TYPE_GAME_ROTATION_VECTOR
-                && event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) {
-            return;
-        }
+        try {
+            if (event == null || event.sensor == null) {
+                return;
+            }
+            if (event.sensor.getType() != Sensor.TYPE_GAME_ROTATION_VECTOR
+                    && event.sensor.getType() != Sensor.TYPE_ROTATION_VECTOR) {
+                return;
+            }
+            if (event.values == null || event.values.length < 3) {
+                return;
+            }
 
-        SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
-        SensorManager.getOrientation(rotationMatrix, orientation);
+            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
+            SensorManager.getOrientation(rotationMatrix, orientation);
 
-        latestYaw = orientation[0];
-        latestPitch = orientation[1];
-        long nowMs = SystemClock.elapsedRealtime();
+            latestYaw = orientation[0];
+            latestPitch = orientation[1];
+            long nowMs = SystemClock.elapsedRealtime();
 
-        if (!hasSample) {
-            hasSample = true;
-            firstSampleTimestampMs = nowMs;
+            if (!hasSample) {
+                hasSample = true;
+                firstSampleTimestampMs = nowMs;
+                previousTimestampMs = nowMs;
+                previousYaw = latestYaw;
+                previousPitch = latestPitch;
+                centerYaw = latestYaw;
+                centerPitch = latestPitch;
+                filteredX = 0f;
+                filteredY = 0f;
+                return;
+            }
+
+            float dt = Math.max(0.008f, (nowMs - previousTimestampMs) / 1000f);
+            float yawSpeed = Math.abs(shortestAngle(latestYaw - previousYaw)) / dt;
+            float pitchSpeed = Math.abs(latestPitch - previousPitch) / dt;
+            float rawMotion = yawSpeed + pitchSpeed;
+            motionIntensity += 0.16f * (rawMotion - motionIntensity);
+
             previousTimestampMs = nowMs;
             previousYaw = latestYaw;
             previousPitch = latestPitch;
-            centerYaw = latestYaw;
-            centerPitch = latestPitch;
-            filteredX = 0f;
-            filteredY = 0f;
-            return;
+
+            if (!calibrated && nowMs - firstSampleTimestampMs > 450L) {
+                calibrate();
+            }
+            if (!calibrated) {
+                return;
+            }
+
+            float sensitivity = 0.55f + (GamePreferences.getAimSensitivity(context) - 1) * (1.45f / 9f);
+            float deltaYaw = shortestAngle(latestYaw - centerYaw);
+            float deltaPitch = latestPitch - centerPitch;
+
+            float targetX = clamp(deltaYaw / HORIZONTAL_RANGE_RAD * sensitivity, -1f, 1f);
+            float targetY = clamp(deltaPitch / VERTICAL_RANGE_RAD * sensitivity, -1f, 1f);
+            if (!GamePreferences.isInvertVertical(context)) {
+                targetY = -targetY;
+            }
+
+            float smoothing = 0.19f;
+            filteredX += smoothing * (targetX - filteredX);
+            filteredY += smoothing * (targetY - filteredY);
+            listener.onAimChanged(filteredX, filteredY, motionIntensity);
+        } catch (Throwable ignored) {
+            // A malformed or unsupported sensor sample must not crash the activity.
         }
-
-        float dt = Math.max(0.008f, (nowMs - previousTimestampMs) / 1000f);
-        float yawSpeed = Math.abs(shortestAngle(latestYaw - previousYaw)) / dt;
-        float pitchSpeed = Math.abs(latestPitch - previousPitch) / dt;
-        float rawMotion = yawSpeed + pitchSpeed;
-        motionIntensity += 0.16f * (rawMotion - motionIntensity);
-
-        previousTimestampMs = nowMs;
-        previousYaw = latestYaw;
-        previousPitch = latestPitch;
-
-        if (!calibrated && nowMs - firstSampleTimestampMs > 450L) {
-            calibrate();
-        }
-        if (!calibrated) {
-            return;
-        }
-
-        float sensitivity = 0.55f + (GamePreferences.getAimSensitivity(context) - 1) * (1.45f / 9f);
-        float deltaYaw = shortestAngle(latestYaw - centerYaw);
-        float deltaPitch = latestPitch - centerPitch;
-
-        float targetX = clamp(deltaYaw / HORIZONTAL_RANGE_RAD * sensitivity, -1f, 1f);
-        float targetY = clamp(deltaPitch / VERTICAL_RANGE_RAD * sensitivity, -1f, 1f);
-        if (!GamePreferences.isInvertVertical(context)) {
-            targetY = -targetY;
-        }
-
-        float smoothing = 0.19f;
-        filteredX += smoothing * (targetX - filteredX);
-        filteredY += smoothing * (targetY - filteredY);
-        listener.onAimChanged(filteredX, filteredY, motionIntensity);
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        // Relative orientation is enough for this game; no accuracy UI is required.
+        // Relative orientation is sufficient for aiming.
     }
 
     private static float shortestAngle(float angle) {
