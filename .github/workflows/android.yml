@@ -14,6 +14,19 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Apply Snap Penalty 0.3 patch
+        run: |
+          cat .github/build_payload/snap_penalty_0_3_patch.part00 \
+              .github/build_payload/snap_penalty_0_3_patch.part01 \
+              .github/build_payload/snap_penalty_0_3_patch.part02 \
+              .github/build_payload/snap_penalty_0_3_patch.part03 \
+              .github/build_payload/snap_penalty_0_3_patch.part04 \
+              .github/build_payload/snap_penalty_0_3_patch.part05 > /tmp/snap_penalty_patch.b64
+          base64 --decode /tmp/snap_penalty_patch.b64 > /tmp/snap_penalty_patch.tgz
+          tar -xzf /tmp/snap_penalty_patch.tgz -C .
+          grep "versionName" app/build.gradle
+          test -f app/src/main/assets/sprite_atlas.png
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -39,15 +52,15 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/SnapPenaltyWear-0.1.0-debug.apk
-          sha256sum release/SnapPenaltyWear-0.1.0-debug.apk > release/SnapPenaltyWear-0.1.0-debug.apk.sha256
-          zip -qr release/SnapPenaltyWear-0.1.0-source.zip . \
+          cp app/build/outputs/apk/debug/app-debug.apk release/SnapPenaltyWear-0.3.0-safe-debug.apk
+          sha256sum release/SnapPenaltyWear-0.3.0-safe-debug.apk > release/SnapPenaltyWear-0.3.0-safe-debug.apk.sha256
+          zip -qr release/SnapPenaltyWear-0.3.0-safe-source.zip . \
             -x '.git/*' 'release/*' '*/build/*' '.gradle/*'
-          sha256sum release/SnapPenaltyWear-0.1.0-source.zip > release/SnapPenaltyWear-0.1.0-source.zip.sha256
+          sha256sum release/SnapPenaltyWear-0.3.0-safe-source.zip > release/SnapPenaltyWear-0.3.0-safe-source.zip.sha256
 
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
-          name: SnapPenaltyWear-0.1.0
+          name: SnapPenaltyWear-0.3.0-safe
           path: release/*
           if-no-files-found: error
