@@ -19,10 +19,31 @@ public final class BackgroundMusic {
     private static final String[][] TRACK_ASSETS = {
             {
                     "music_tub_v5_00.b64",
-                    "music_tub_v5_01.b64"
+                    "music_tub_v5_01.b64",
+                    "music_tub_v5_02.b64",
+                    "music_tub_v5_03.b64",
+                    "music_tub_v5_04.b64",
+                    "music_tub_v5_05.b64",
+                    "music_tub_v5_06.b64",
+                    "music_tub_v5_07.b64",
+                    "music_tub_v5_08.b64",
+                    "music_tub_v5_09.b64",
+                    "music_tub_v5_10.b64",
+                    "music_tub_v5_11.b64",
+                    "music_tub_v5_12.b64",
+                    "music_tub_v5_13.b64",
+                    "music_tub_v5_14.b64"
             },
             {
-                    "music_song2_v5_00.b64"
+                    "music_song2_v5_00.b64",
+                    "music_song2_v5_01.b64",
+                    "music_song2_v5_02.b64",
+                    "music_song2_v5_03.b64",
+                    "music_song2_v5_04.b64",
+                    "music_song2_v5_05.b64",
+                    "music_song2_v5_06.b64",
+                    "music_song2_v5_07.b64",
+                    "music_song2_v5_08.b64"
             }
     };
     private static final String[] CACHE_NAMES = {
@@ -160,7 +181,6 @@ public final class BackgroundMusic {
                 output.flush();
             }
         } catch (IOException exception) {
-            // SequenceInputStream closes all streams it reaches; close any unopened tail too.
             for (InputStream stream : chunks) {
                 try {
                     stream.close();
@@ -177,7 +197,6 @@ public final class BackgroundMusic {
         if (player == null) {
             return;
         }
-        // Quieter while the microphone is active to reduce speaker-to-mic bleed.
         float volume = microphoneActive ? 0.18f : 0.32f;
         try {
             player.setVolume(volume, volume);
