@@ -7,59 +7,58 @@ import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.os.SystemClock;
 
+/**
+ * Relative pointing controller derived from the orientation approach used by Maestro Wear.
+ * Instead of subtracting Euler angles, it compares the watch screen-normal vector against
+ * the calibrated right/up/forward basis. That avoids wraparound and gimbal issues and makes
+ * soft wrist tilts usable in any initial arm orientation.
+ */
 public final class WristAimController implements SensorEventListener {
     public interface Listener {
         void onAimChanged(float normalizedX, float normalizedY, float motionIntensity);
     }
-
-    // Deliberately small ranges: soft wrist movements should cross most of the goal.
-    private static final float HORIZONTAL_RANGE_RAD = (float) Math.toRadians(9.0);
-    private static final float VERTICAL_RANGE_RAD = (float) Math.toRadians(15.0);
 
     private final Context context;
     private final SensorManager sensorManager;
     private final Sensor rotationSensor;
     private final Listener listener;
     private final float[] rotationMatrix = new float[9];
-    private final float[] orientation = new float[3];
+
+    private final float[] currentForward = new float[3];
+    private final float[] previousForward = new float[3];
+    private final float[] centerForward = new float[3];
+    private final float[] centerRight = new float[3];
+    private final float[] centerUp = new float[3];
 
     private boolean running;
-    private boolean calibrated;
     private boolean hasSample;
-    private float latestYaw;
-    private float latestPitch;
-    private float latestRoll;
-    private float centerYaw;
-    private float centerPitch;
-    private float centerRoll;
+    private boolean calibrated;
     private float filteredX;
     private float filteredY;
-    private float previousYaw;
-    private float previousPitch;
-    private float previousRoll;
     private float motionIntensity;
-    private long previousTimestampMs;
-    private long firstSampleTimestampMs;
+    private long firstSampleMs;
+    private long previousSampleMs;
 
     public WristAimController(Context context, Listener listener) {
         this.context = context.getApplicationContext();
         this.listener = listener;
+
         SensorManager manager = null;
-        Sensor selectedSensor = null;
+        Sensor selected = null;
         try {
             manager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
             if (manager != null) {
-                selectedSensor = manager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-                if (selectedSensor == null) {
-                    selectedSensor = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+                selected = manager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+                if (selected == null) {
+                    selected = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
                 }
             }
         } catch (Throwable ignored) {
             manager = null;
-            selectedSensor = null;
+            selected = null;
         }
         sensorManager = manager;
-        rotationSensor = selectedSensor;
+        rotationSensor = selected;
     }
 
     public boolean isAvailable() {
@@ -67,11 +66,15 @@ public final class WristAimController implements SensorEventListener {
     }
 
     public void start() {
-        if (running || sensorManager == null || rotationSensor == null) {
+        if (running || !isAvailable()) {
             return;
         }
         try {
-            running = sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+            running = sensorManager.registerListener(
+                    this,
+                    rotationSensor,
+                    SensorManager.SENSOR_DELAY_GAME
+            );
         } catch (Throwable ignored) {
             running = false;
         }
@@ -94,9 +97,13 @@ public final class WristAimController implements SensorEventListener {
             calibrated = false;
             return;
         }
-        centerYaw = latestYaw;
-        centerPitch = latestPitch;
-        centerRoll = latestRoll;
+        // Columns of Android's rotation matrix are the device X, Y and Z axes in world space.
+        copyColumn(rotationMatrix, 2, centerForward);
+        copyColumn(rotationMatrix, 0, centerRight);
+        copyColumn(rotationMatrix, 1, centerUp);
+        normalize(centerForward);
+        normalize(centerRight);
+        normalize(centerUp);
         filteredX = 0f;
         filteredY = 0f;
         calibrated = true;
@@ -116,64 +123,63 @@ public final class WristAimController implements SensorEventListener {
             if (type != Sensor.TYPE_GAME_ROTATION_VECTOR && type != Sensor.TYPE_ROTATION_VECTOR) {
                 return;
             }
+
             SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
-            SensorManager.getOrientation(rotationMatrix, orientation);
-            latestYaw = orientation[0];
-            latestPitch = orientation[1];
-            latestRoll = orientation[2];
-            long nowMs = SystemClock.elapsedRealtime();
+            copyColumn(rotationMatrix, 2, currentForward);
+            normalize(currentForward);
+            long now = SystemClock.elapsedRealtime();
 
             if (!hasSample) {
                 hasSample = true;
-                firstSampleTimestampMs = nowMs;
-                previousTimestampMs = nowMs;
-                previousYaw = latestYaw;
-                previousPitch = latestPitch;
-                previousRoll = latestRoll;
-                centerYaw = latestYaw;
-                centerPitch = latestPitch;
-                centerRoll = latestRoll;
+                firstSampleMs = now;
+                previousSampleMs = now;
+                copy(currentForward, previousForward);
                 return;
             }
 
-            float dt = Math.max(0.008f, (nowMs - previousTimestampMs) / 1000f);
-            float yawSpeed = Math.abs(shortestAngle(latestYaw - previousYaw)) / dt;
-            float pitchSpeed = Math.abs(latestPitch - previousPitch) / dt;
-            float rollSpeed = Math.abs(shortestAngle(latestRoll - previousRoll)) / dt;
-            motionIntensity += 0.14f * ((yawSpeed + pitchSpeed + rollSpeed) - motionIntensity);
-            previousTimestampMs = nowMs;
-            previousYaw = latestYaw;
-            previousPitch = latestPitch;
-            previousRoll = latestRoll;
+            float dt = Math.max(0.008f, Math.min(0.25f, (now - previousSampleMs) / 1000f));
+            float angularStep = safeAcos(clamp(dot(currentForward, previousForward), -1f, 1f));
+            float angularSpeed = angularStep / dt;
+            motionIntensity += 0.16f * (angularSpeed - motionIntensity);
+            previousSampleMs = now;
+            copy(currentForward, previousForward);
 
-            if (!calibrated && nowMs - firstSampleTimestampMs > 250L) {
+            if (!calibrated && now - firstSampleMs >= 420L) {
                 calibrate();
             }
             if (!calibrated) {
                 return;
             }
 
-            int setting = GamePreferences.getAimSensitivity(context);
-            float horizontalGain = 1.35f + (setting - 1) * (2.65f / 9f);
-            float verticalGain = 0.85f + (setting - 1) * (1.25f / 9f);
-            float deltaYaw = shortestAngle(latestYaw - centerYaw);
-            float deltaPitch = latestPitch - centerPitch;
-            float deltaRoll = shortestAngle(latestRoll - centerRoll);
+            float forwardProjection = dot(currentForward, centerForward);
+            float horizontalAngle = (float) Math.atan2(
+                    dot(currentForward, centerRight),
+                    forwardProjection
+            );
+            float verticalAngle = (float) Math.atan2(
+                    dot(currentForward, centerUp),
+                    forwardProjection
+            );
 
-            // Roll is the dominant left/right movement on a worn watch; yaw is blended in
-            // so horizontal aim still responds if the watch is held at a different angle.
-            float horizontalMotion = deltaRoll * 0.88f + deltaYaw * 0.42f;
-            float targetX = clamp(horizontalMotion / HORIZONTAL_RANGE_RAD * horizontalGain, -1f, 1f);
-            float targetY = clamp(deltaPitch / VERTICAL_RANGE_RAD * verticalGain, -1f, 1f);
+            int setting = GamePreferences.getAimSensitivity(context);
+            float fraction = (setting - 1f) / 19f;
+            float horizontalRange = (float) Math.toRadians(24f - 19.5f * fraction);
+            float verticalRange = (float) Math.toRadians(28f - 18f * fraction);
+
+            float targetX = shape(horizontalAngle / horizontalRange, 0.80f);
+            float targetY = shape(verticalAngle / verticalRange, 0.92f);
             if (!GamePreferences.isInvertVertical(context)) {
                 targetY = -targetY;
             }
+            targetX = clamp(targetX, -1f, 1f);
+            targetY = clamp(targetY, -1f, 1f);
 
-            // Faster response, with just enough smoothing to avoid jitter.
-            filteredX += 0.34f * (targetX - filteredX);
-            filteredY += 0.24f * (targetY - filteredY);
+            // Horizontal response is deliberately quicker because that was the weak axis on-watch.
+            filteredX += 0.46f * (targetX - filteredX);
+            filteredY += 0.31f * (targetY - filteredY);
             listener.onAimChanged(filteredX, filteredY, motionIntensity);
         } catch (Throwable ignored) {
+            // A malformed sample must never close the game.
         }
     }
 
@@ -181,14 +187,41 @@ public final class WristAimController implements SensorEventListener {
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
     }
 
-    private static float shortestAngle(float angle) {
-        while (angle > Math.PI) {
-            angle -= (float) (Math.PI * 2.0);
+    private static void copyColumn(float[] matrix, int column, float[] output) {
+        output[0] = matrix[column];
+        output[1] = matrix[3 + column];
+        output[2] = matrix[6 + column];
+    }
+
+    private static void copy(float[] source, float[] destination) {
+        destination[0] = source[0];
+        destination[1] = source[1];
+        destination[2] = source[2];
+    }
+
+    private static float dot(float[] a, float[] b) {
+        return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    }
+
+    private static void normalize(float[] vector) {
+        float length = (float) Math.sqrt(dot(vector, vector));
+        if (length > 0.00001f) {
+            vector[0] /= length;
+            vector[1] /= length;
+            vector[2] /= length;
         }
-        while (angle < -Math.PI) {
-            angle += (float) (Math.PI * 2.0);
+    }
+
+    private static float shape(float value, float exponent) {
+        float absolute = Math.abs(value);
+        if (absolute < 0.006f) {
+            return 0f;
         }
-        return angle;
+        return Math.copySign((float) Math.pow(absolute, exponent), value);
+    }
+
+    private static float safeAcos(float value) {
+        return (float) Math.acos(clamp(value, -1f, 1f));
     }
 
     private static float clamp(float value, float min, float max) {
