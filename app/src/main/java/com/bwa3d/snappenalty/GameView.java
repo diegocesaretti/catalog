@@ -209,21 +209,20 @@ public final class GameView extends View {
             p = easeOut(clamp((now - stateStart) / 560f, 0f, 1f));
         }
         float startX = goal.centerX();
-        float startBottom = goal.bottom + getHeight() * 0.018f;
+        // Feet sit on the goal line. The previous atlas included empty pixels that made the
+        // keeper appear too high; the new transparent crops use their true visible bounds.
+        float startBottom = goal.bottom + getHeight() * 0.010f;
         float targetX = map(keeperX, 0, 1, aimArea.left, aimArea.right);
         float targetBottom = keeperY < 0.5f
-                ? goal.top + goal.height() * 0.74f
-                : goal.bottom + getHeight() * 0.018f;
+                ? goal.top + goal.height() * 0.77f
+                : goal.bottom + getHeight() * 0.010f;
         float x = lerp(startX, targetX, p);
         float bottom = lerp(startBottom, targetBottom, p)
-                - (float) Math.sin(p * Math.PI) * getHeight() * 0.008f;
+                - (float) Math.sin(p * Math.PI) * getHeight() * 0.006f;
         String sprite = keeperSprite(p);
-        boolean mirror = false;
-        if ("high_left".equals(sprite)) { sprite = "high_right"; mirror = true; }
-        if ("low_left".equals(sprite)) { sprite = "low_right"; mirror = true; }
-        float height = Math.min(getWidth(), getHeight()) * 0.19f;
-        if (sprite.startsWith("low_")) height *= 0.82f;
-        drawSprite(canvas, sprite, x, bottom, height, mirror);
+        float height = Math.min(getWidth(), getHeight()) * 0.185f;
+        if (sprite.startsWith("low_")) height *= 0.84f;
+        drawSprite(canvas, sprite, x, bottom, height, false);
     }
 
     private String keeperSprite(float p) {
@@ -253,7 +252,14 @@ public final class GameView extends View {
             x = q * q * x + 2f * q * p * cx + p * p * tx;
             y = q * q * y + 2f * q * p * cy + p * p * ty;
         }
-        drawSprite(canvas, "ball", x, y,
+        String ballFrame;
+        if (state == State.READY) {
+            ballFrame = "ball1";
+        } else {
+            int frame = ((int) (p * 15f)) % 3;
+            ballFrame = frame == 0 ? "ball1" : frame == 1 ? "ball2" : "ball3";
+        }
+        drawSprite(canvas, ballFrame, x, y,
                 lerp(Math.min(getWidth(), getHeight()) * 0.105f,
                         Math.min(getWidth(), getHeight()) * 0.048f, p), false);
     }
