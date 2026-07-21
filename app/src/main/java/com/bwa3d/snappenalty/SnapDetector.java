@@ -14,15 +14,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class SnapDetector {
     public interface Listener {
         void onSnapDetected();
-
         void onAudioLevel(float level01);
-
         void onDetectorError(String message);
     }
 
-    private static final int SAMPLE_RATE = 16_000;
-    private static final int FRAME_SAMPLES = 512;
-    private static final long COOLDOWN_MS = 360L;
+    private static final int SAMPLE_RATE = 22050;
+    private static final int FRAME_SAMPLES = 1024;
+    private static final long COOLDOWN_MS = 300L;
 
     private final Context context;
     private final Listener listener;
@@ -44,45 +42,35 @@ public final class SnapDetector {
     }
 
     public boolean start() {
-        if (running.get()) {
-            return true;
-        }
+        if (running.get()) return true;
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             postError("Microphone permission is not granted");
             return false;
         }
-
-        int minimum = AudioRecord.getMinBufferSize(
-                SAMPLE_RATE,
+        int minimum = AudioRecord.getMinBufferSize(SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-        );
+                AudioFormat.ENCODING_PCM_16BIT);
         if (minimum <= 0) {
-            postError("This watch did not expose a usable microphone buffer");
+            postError("Microphone buffer unavailable");
             return false;
         }
-
-        int bufferBytes = Math.max(minimum, FRAME_SAMPLES * 4);
+        int bufferBytes = Math.max(minimum, FRAME_SAMPLES * 6);
         try {
-            audioRecord = new AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
+            audioRecord = new AudioRecord(MediaRecorder.AudioSource.MIC,
                     SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
-                    bufferBytes
-            );
+                    bufferBytes);
         } catch (RuntimeException exception) {
             postError("Could not open the watch microphone");
             return false;
         }
-
         if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
             audioRecord.release();
             audioRecord = null;
-            postError("The watch microphone could not be initialized");
+            postError("Microphone init failed");
             return false;
         }
-
         running.set(true);
         worker = new Thread(this::captureLoop, "SnapPenalty-Microphone");
         worker.start();
@@ -93,19 +81,12 @@ public final class SnapDetector {
         running.set(false);
         AudioRecord record = audioRecord;
         if (record != null) {
-            try {
-                record.stop();
-            } catch (IllegalStateException ignored) {
-                // The capture loop may already have stopped the recorder.
-            }
+            try { record.stop(); } catch (IllegalStateException ignored) {}
         }
         Thread localWorker = worker;
         if (localWorker != null) {
-            try {
-                localWorker.join(350L);
-            } catch (InterruptedException exception) {
-                Thread.currentThread().interrupt();
-            }
+            try { localWorker.join(400L); }
+            catch (InterruptedException exception) { Thread.currentThread().interrupt(); }
         }
         if (audioRecord != null) {
             audioRecord.release();
@@ -116,52 +97,45 @@ public final class SnapDetector {
 
     private void captureLoop() {
         short[] frame = new short[FRAME_SAMPLES];
-        float noiseRms = 180f;
+        float noiseRms = 120f;
         long lastSnapMs = 0L;
-        float smoothedLevel = 0f;
-
+        float levelSmoothed = 0f;
         try {
             audioRecord.startRecording();
             while (running.get()) {
                 int count = audioRecord.read(frame, 0, frame.length, AudioRecord.READ_BLOCKING);
-                if (count <= 8) {
-                    continue;
-                }
-
+                if (count <= 16) continue;
                 Features features = calculateFeatures(frame, count);
-                float normalizedLevel = clamp(features.peak / 10_000f, 0f, 1f);
-                smoothedLevel += 0.22f * (normalizedLevel - smoothedLevel);
-                final float levelForUi = smoothedLevel;
-                mainHandler.post(() -> listener.onAudioLevel(levelForUi));
+                float normalizedLevel = clamp(features.peak / 7000f, 0f, 1f);
+                levelSmoothed += 0.22f * (normalizedLevel - levelSmoothed);
+                final float uiLevel = levelSmoothed;
+                mainHandler.post(() -> listener.onAudioLevel(uiLevel));
 
                 int localSensitivity = sensitivity;
-                float relativeMultiplier = 8.2f - (localSensitivity - 1) * (5.6f / 9f);
-                float absoluteMinimum = 2_900f - (localSensitivity - 1) * (1_850f / 9f);
-                float peakThreshold = Math.max(absoluteMinimum, noiseRms * relativeMultiplier);
-                float crestMinimum = 2.45f - (localSensitivity - 1) * (0.55f / 9f);
-                float derivativeMinimum = 1.02f - (localSensitivity - 1) * (0.22f / 9f);
-                float zeroCrossingMinimum = 0.055f;
-
+                float peakFloor = 1200f - (localSensitivity - 1) * 80f;
+                float relativePeak = 5.5f - (localSensitivity - 1) * 0.35f;
+                float derivativeFloor = 0.82f - (localSensitivity - 1) * 0.03f;
+                float crestFloor = 2.0f - (localSensitivity - 1) * 0.03f;
+                boolean strongPeak = features.peak > Math.max(peakFloor, noiseRms * relativePeak);
+                boolean impulsive = features.derivativeRatio > derivativeFloor
+                        && features.crestFactor > crestFloor;
+                boolean brightEnough = features.zeroCrossingRate > 0.035f;
                 long nowMs = android.os.SystemClock.elapsedRealtime();
-                boolean sharpImpulse = features.peak >= peakThreshold
-                        && features.crestFactor >= crestMinimum
-                        && features.derivativeRatio >= derivativeMinimum
-                        && features.zeroCrossingRate >= zeroCrossingMinimum;
+                boolean isSnap = strongPeak && impulsive && brightEnough
+                        && nowMs - lastSnapMs > COOLDOWN_MS;
 
-                if (sharpImpulse && nowMs - lastSnapMs >= COOLDOWN_MS) {
+                if (isSnap) {
                     lastSnapMs = nowMs;
                     mainHandler.post(listener::onSnapDetected);
-                } else if (!sharpImpulse && features.rms < noiseRms * 2.2f) {
-                    noiseRms += 0.025f * (features.rms - noiseRms);
-                    noiseRms = clamp(noiseRms, 70f, 4_000f);
+                } else if (features.rms < noiseRms * 2.5f) {
+                    noiseRms += 0.03f * (features.rms - noiseRms);
+                    noiseRms = clamp(noiseRms, 50f, 3500f);
                 }
             }
         } catch (SecurityException exception) {
             postError("Microphone permission was revoked");
         } catch (IllegalStateException exception) {
-            if (running.get()) {
-                postError("Microphone capture stopped unexpectedly");
-            }
+            if (running.get()) postError("Microphone capture stopped unexpectedly");
         } finally {
             running.set(false);
             mainHandler.post(() -> listener.onAudioLevel(0f));
@@ -174,41 +148,30 @@ public final class SnapDetector {
         int peak = 0;
         int zeroCrossings = 0;
         short previous = samples[0];
-
         for (int i = 0; i < count; i++) {
             int value = samples[i];
-            int absolute = Math.abs(value);
-            peak = Math.max(peak, absolute);
+            peak = Math.max(peak, Math.abs(value));
             sumSquares += (double) value * value;
-
             if (i > 0) {
                 derivativeSum += Math.abs(value - previous);
-                if ((value >= 0 && previous < 0) || (value < 0 && previous >= 0)) {
-                    zeroCrossings++;
-                }
+                if ((value >= 0 && previous < 0) || (value < 0 && previous >= 0)) zeroCrossings++;
             }
             previous = samples[i];
         }
-
         float rms = (float) Math.sqrt(sumSquares / count);
         float meanDerivative = (float) (derivativeSum / Math.max(1, count - 1));
-        float crestFactor = peak / Math.max(1f, rms);
-        float derivativeRatio = meanDerivative / Math.max(1f, rms);
-        float zeroCrossingRate = zeroCrossings / (float) Math.max(1, count - 1);
-        return new Features(peak, rms, crestFactor, derivativeRatio, zeroCrossingRate);
+        return new Features(peak, rms,
+                peak / Math.max(1f, rms),
+                meanDerivative / Math.max(1f, rms),
+                zeroCrossings / (float) Math.max(1, count - 1));
     }
 
     private void postError(String message) {
         mainHandler.post(() -> listener.onDetectorError(message));
     }
 
-    private static int clamp(int value, int min, int max) {
-        return Math.max(min, Math.min(max, value));
-    }
-
-    private static float clamp(float value, float min, float max) {
-        return Math.max(min, Math.min(max, value));
-    }
+    private static int clamp(int value, int min, int max) { return Math.max(min, Math.min(max, value)); }
+    private static float clamp(float value, float min, float max) { return Math.max(min, Math.min(max, value)); }
 
     private static final class Features {
         final float peak;
