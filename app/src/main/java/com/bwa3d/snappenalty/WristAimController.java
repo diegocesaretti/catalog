@@ -12,91 +12,105 @@ public final class WristAimController implements SensorEventListener {
         void onAimChanged(float normalizedX, float normalizedY, float motionIntensity);
     }
 
-    // Deliberately small ranges: soft wrist movements should cross most of the goal.
-    private static final float HORIZONTAL_RANGE_RAD = (float) Math.toRadians(9.0);
-    private static final float VERTICAL_RANGE_RAD = (float) Math.toRadians(15.0);
+    private static final long AUTO_CALIBRATION_DELAY_MS = 320L;
+    private static final long GAME_SENSOR_STALE_NS = 300_000_000L;
 
     private final Context context;
     private final SensorManager sensorManager;
+    private final Sensor gameRotationSensor;
     private final Sensor rotationSensor;
+    private final Sensor gyroscopeSensor;
     private final Listener listener;
-    private final float[] rotationMatrix = new float[9];
-    private final float[] orientation = new float[3];
+
+    private final float[] currentMatrix = new float[9];
+    private final float[] gameMatrix = new float[9];
+    private final float[] absoluteMatrix = new float[9];
+    private final float[] centerMatrix = new float[9];
+    private final float[] centerTranspose = new float[9];
+    private final float[] relativeMatrix = new float[9];
+    private final float[] relativeOrientation = new float[3];
+    private final float[] gyroBias = new float[3];
 
     private boolean running;
+    private boolean hasGameSample;
+    private boolean hasAbsoluteSample;
+    private boolean hasOrientationSample;
     private boolean calibrated;
-    private boolean hasSample;
-    private float latestYaw;
-    private float latestPitch;
-    private float latestRoll;
-    private float centerYaw;
-    private float centerPitch;
-    private float centerRoll;
+    private long latestGameTimestampNs;
+    private long firstOrientationTimestampMs;
     private float filteredX;
     private float filteredY;
-    private float previousYaw;
-    private float previousPitch;
-    private float previousRoll;
     private float motionIntensity;
-    private long previousTimestampMs;
-    private long firstSampleTimestampMs;
 
     public WristAimController(Context context, Listener listener) {
         this.context = context.getApplicationContext();
         this.listener = listener;
         SensorManager manager = null;
-        Sensor selectedSensor = null;
+        Sensor game = null;
+        Sensor absolute = null;
+        Sensor gyro = null;
         try {
             manager = (SensorManager) context.getSystemService(Context.SENSOR_SERVICE);
             if (manager != null) {
-                selectedSensor = manager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-                if (selectedSensor == null) {
-                    selectedSensor = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-                }
+                game = manager.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+                absolute = manager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+                gyro = manager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
             }
         } catch (Throwable ignored) {
             manager = null;
-            selectedSensor = null;
         }
         sensorManager = manager;
-        rotationSensor = selectedSensor;
+        gameRotationSensor = game;
+        rotationSensor = absolute;
+        gyroscopeSensor = gyro;
     }
 
     public boolean isAvailable() {
-        return sensorManager != null && rotationSensor != null;
+        return sensorManager != null && (gameRotationSensor != null || rotationSensor != null);
     }
 
     public void start() {
-        if (running || sensorManager == null || rotationSensor == null) {
-            return;
-        }
+        if (running || sensorManager == null || !isAvailable()) return;
+        boolean registered = false;
         try {
-            running = sensorManager.registerListener(this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+            if (gameRotationSensor != null) {
+                registered |= sensorManager.registerListener(
+                        this, gameRotationSensor, SensorManager.SENSOR_DELAY_GAME);
+            }
+            if (rotationSensor != null) {
+                registered |= sensorManager.registerListener(
+                        this, rotationSensor, SensorManager.SENSOR_DELAY_GAME);
+            }
+            if (gyroscopeSensor != null) {
+                sensorManager.registerListener(
+                        this, gyroscopeSensor, SensorManager.SENSOR_DELAY_GAME);
+            }
         } catch (Throwable ignored) {
-            running = false;
+            try {
+                sensorManager.unregisterListener(this);
+            } catch (Throwable ignoredAgain) {
+            }
+            registered = false;
         }
+        running = registered;
     }
 
     public void stop() {
-        if (!running || sensorManager == null) {
-            return;
-        }
+        if (sensorManager == null) return;
         try {
             sensorManager.unregisterListener(this);
         } catch (Throwable ignored) {
-        } finally {
-            running = false;
         }
+        running = false;
     }
 
     public void calibrate() {
-        if (!hasSample) {
+        if (!hasOrientationSample) {
             calibrated = false;
             return;
         }
-        centerYaw = latestYaw;
-        centerPitch = latestPitch;
-        centerRoll = latestRoll;
+        System.arraycopy(currentMatrix, 0, centerMatrix, 0, 9);
+        transpose3x3(centerMatrix, centerTranspose);
         filteredX = 0f;
         filteredY = 0f;
         calibrated = true;
@@ -108,86 +122,135 @@ public final class WristAimController implements SensorEventListener {
 
     @Override
     public void onSensorChanged(SensorEvent event) {
+        if (event == null || event.sensor == null || event.values == null) return;
         try {
-            if (event == null || event.sensor == null || event.values == null || event.values.length < 3) {
-                return;
-            }
             int type = event.sensor.getType();
-            if (type != Sensor.TYPE_GAME_ROTATION_VECTOR && type != Sensor.TYPE_ROTATION_VECTOR) {
+            if (type == Sensor.TYPE_GYROSCOPE) {
+                handleGyroscope(event.values);
                 return;
             }
-            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values);
-            SensorManager.getOrientation(rotationMatrix, orientation);
-            latestYaw = orientation[0];
-            latestPitch = orientation[1];
-            latestRoll = orientation[2];
+            if (type != Sensor.TYPE_GAME_ROTATION_VECTOR
+                    && type != Sensor.TYPE_ROTATION_VECTOR) {
+                return;
+            }
+            if (event.values.length < 3) return;
+
+            if (type == Sensor.TYPE_GAME_ROTATION_VECTOR) {
+                SensorManager.getRotationMatrixFromVector(gameMatrix, event.values);
+                hasGameSample = true;
+                latestGameTimestampNs = event.timestamp;
+            } else {
+                SensorManager.getRotationMatrixFromVector(absoluteMatrix, event.values);
+                hasAbsoluteSample = true;
+            }
+
+            boolean useGame = hasGameSample
+                    && (type == Sensor.TYPE_GAME_ROTATION_VECTOR
+                    || event.timestamp - latestGameTimestampNs < GAME_SENSOR_STALE_NS);
+            if (useGame) {
+                System.arraycopy(gameMatrix, 0, currentMatrix, 0, 9);
+            } else if (hasAbsoluteSample) {
+                System.arraycopy(absoluteMatrix, 0, currentMatrix, 0, 9);
+            } else {
+                return;
+            }
+
             long nowMs = SystemClock.elapsedRealtime();
-
-            if (!hasSample) {
-                hasSample = true;
-                firstSampleTimestampMs = nowMs;
-                previousTimestampMs = nowMs;
-                previousYaw = latestYaw;
-                previousPitch = latestPitch;
-                previousRoll = latestRoll;
-                centerYaw = latestYaw;
-                centerPitch = latestPitch;
-                centerRoll = latestRoll;
+            if (!hasOrientationSample) {
+                hasOrientationSample = true;
+                firstOrientationTimestampMs = nowMs;
+                System.arraycopy(currentMatrix, 0, centerMatrix, 0, 9);
+                transpose3x3(centerMatrix, centerTranspose);
                 return;
             }
-
-            float dt = Math.max(0.008f, (nowMs - previousTimestampMs) / 1000f);
-            float yawSpeed = Math.abs(shortestAngle(latestYaw - previousYaw)) / dt;
-            float pitchSpeed = Math.abs(latestPitch - previousPitch) / dt;
-            float rollSpeed = Math.abs(shortestAngle(latestRoll - previousRoll)) / dt;
-            motionIntensity += 0.14f * ((yawSpeed + pitchSpeed + rollSpeed) - motionIntensity);
-            previousTimestampMs = nowMs;
-            previousYaw = latestYaw;
-            previousPitch = latestPitch;
-            previousRoll = latestRoll;
-
-            if (!calibrated && nowMs - firstSampleTimestampMs > 250L) {
+            if (!calibrated && nowMs - firstOrientationTimestampMs >= AUTO_CALIBRATION_DELAY_MS) {
                 calibrate();
             }
-            if (!calibrated) {
-                return;
+            if (!calibrated) return;
+
+            multiply3x3(centerTranspose, currentMatrix, relativeMatrix);
+            SensorManager.getOrientation(relativeMatrix, relativeOrientation);
+
+            float yaw = wrapAngle(relativeOrientation[0]);
+            float pitch = wrapAngle(relativeOrientation[1]);
+            float roll = wrapAngle(relativeOrientation[2]);
+
+            float horizontal;
+            if (Math.abs(roll) >= Math.abs(yaw) * 0.72f) {
+                horizontal = roll;
+                if (sameDirection(roll, yaw)) horizontal += yaw * 0.18f;
+            } else {
+                horizontal = yaw;
+                if (sameDirection(yaw, roll)) horizontal += roll * 0.18f;
             }
 
             int setting = GamePreferences.getAimSensitivity(context);
-            float horizontalGain = 1.35f + (setting - 1) * (2.65f / 9f);
-            float verticalGain = 0.85f + (setting - 1) * (1.25f / 9f);
-            float deltaYaw = shortestAngle(latestYaw - centerYaw);
-            float deltaPitch = latestPitch - centerPitch;
-            float deltaRoll = shortestAngle(latestRoll - centerRoll);
+            float t = (setting - 1) / 9f;
+            float horizontalRange = (float) Math.toRadians(28f - 21.5f * t);
+            float verticalRange = (float) Math.toRadians(24f - 14f * t);
+            float targetX = clamp(horizontal / horizontalRange, -1f, 1f);
+            float targetY = clamp(pitch / verticalRange, -1f, 1f);
+            if (!GamePreferences.isInvertVertical(context)) targetY = -targetY;
 
-            // Roll is the dominant left/right movement on a worn watch; yaw is blended in
-            // so horizontal aim still responds if the watch is held at a different angle.
-            float horizontalMotion = deltaRoll * 0.88f + deltaYaw * 0.42f;
-            float targetX = clamp(horizontalMotion / HORIZONTAL_RANGE_RAD * horizontalGain, -1f, 1f);
-            float targetY = clamp(deltaPitch / VERTICAL_RANGE_RAD * verticalGain, -1f, 1f);
-            if (!GamePreferences.isInvertVertical(context)) {
-                targetY = -targetY;
-            }
+            float horizontalFollow = 0.24f + 0.18f * t;
+            float verticalFollow = 0.20f + 0.14f * t;
+            filteredX += horizontalFollow * (targetX - filteredX);
+            filteredY += verticalFollow * (targetY - filteredY);
 
-            // Faster response, with just enough smoothing to avoid jitter.
-            filteredX += 0.34f * (targetX - filteredX);
-            filteredY += 0.24f * (targetY - filteredY);
             listener.onAimChanged(filteredX, filteredY, motionIntensity);
         } catch (Throwable ignored) {
         }
+    }
+
+    private void handleGyroscope(float[] values) {
+        if (values.length < 3) return;
+        float x = values[0] - gyroBias[0];
+        float y = values[1] - gyroBias[1];
+        float z = values[2] - gyroBias[2];
+        float magnitude = (float) Math.sqrt(x * x + y * y + z * z);
+
+        if (magnitude < 0.12f) {
+            gyroBias[0] += 0.003f * (values[0] - gyroBias[0]);
+            gyroBias[1] += 0.003f * (values[1] - gyroBias[1]);
+            gyroBias[2] += 0.003f * (values[2] - gyroBias[2]);
+        }
+        motionIntensity += 0.18f * (magnitude - motionIntensity);
     }
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
     }
 
-    private static float shortestAngle(float angle) {
-        while (angle > Math.PI) {
-            angle -= (float) (Math.PI * 2.0);
+    private static void transpose3x3(float[] input, float[] output) {
+        output[0] = input[0];
+        output[1] = input[3];
+        output[2] = input[6];
+        output[3] = input[1];
+        output[4] = input[4];
+        output[5] = input[7];
+        output[6] = input[2];
+        output[7] = input[5];
+        output[8] = input[8];
+    }
+
+    private static void multiply3x3(float[] a, float[] b, float[] out) {
+        for (int row = 0; row < 3; row++) {
+            int r = row * 3;
+            for (int col = 0; col < 3; col++) {
+                out[r + col] = a[r] * b[col]
+                        + a[r + 1] * b[3 + col]
+                        + a[r + 2] * b[6 + col];
+            }
         }
-        while (angle < -Math.PI) {
-            angle += (float) (Math.PI * 2.0);
-        }
+    }
+
+    private static boolean sameDirection(float a, float b) {
+        return a != 0f && b != 0f && Math.signum(a) == Math.signum(b);
+    }
+
+    private static float wrapAngle(float angle) {
+        while (angle > Math.PI) angle -= (float) (Math.PI * 2.0);
+        while (angle < -Math.PI) angle += (float) (Math.PI * 2.0);
         return angle;
     }
 
