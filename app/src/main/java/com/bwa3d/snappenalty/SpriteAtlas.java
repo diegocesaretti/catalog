@@ -20,7 +20,11 @@ public final class SpriteAtlas {
     private final Map<String, Rect> rects = new HashMap<>();
 
     private SpriteAtlas(Context context) {
-        atlas = loadBase64Png(context, "goalkeeper_atlas_v5_00.b64");
+        atlas = loadBase64Png(context, new String[]{
+                "goalkeeper_atlas_v5_00.b64",
+                "goalkeeper_atlas_v5_01.b64",
+                "goalkeeper_atlas_v5_02.b64"
+        });
         atlas.setHasAlpha(true);
 
         rects.put("idle", new Rect(8, 8, 81, 150));
@@ -56,25 +60,40 @@ public final class SpriteAtlas {
         return rect != null ? rect : rects.get("idle");
     }
 
-    private static Bitmap loadBase64Png(Context context, String assetName) {
-        try (InputStream encoded = context.getAssets().open(assetName);
-             Base64InputStream decoded = new Base64InputStream(encoded, android.util.Base64.DEFAULT);
-             ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int read;
-            while ((read = decoded.read(buffer)) != -1) {
-                bytes.write(buffer, 0, read);
+    private static Bitmap loadBase64Png(Context context, String[] assetNames) {
+        java.util.List<InputStream> streams = new java.util.ArrayList<>();
+        try {
+            for (String assetName : assetNames) {
+                streams.add(context.getAssets().open(assetName));
             }
-            byte[] png = bytes.toByteArray();
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inScaled = false;
-            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-            Bitmap bitmap = BitmapFactory.decodeByteArray(png, 0, png.length, options);
-            if (bitmap == null) {
-                throw new IllegalStateException("Could not decode goalkeeper atlas");
+            try (java.io.SequenceInputStream encoded = new java.io.SequenceInputStream(
+                    java.util.Collections.enumeration(streams));
+                 Base64InputStream decoded = new Base64InputStream(
+                         encoded,
+                         android.util.Base64.DEFAULT);
+                 ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int read;
+                while ((read = decoded.read(buffer)) != -1) {
+                    bytes.write(buffer, 0, read);
+                }
+                byte[] png = bytes.toByteArray();
+                BitmapFactory.Options options = new BitmapFactory.Options();
+                options.inScaled = false;
+                options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+                Bitmap bitmap = BitmapFactory.decodeByteArray(png, 0, png.length, options);
+                if (bitmap == null) {
+                    throw new IllegalStateException("Could not decode goalkeeper atlas");
+                }
+                return bitmap;
             }
-            return bitmap;
         } catch (IOException exception) {
+            for (InputStream stream : streams) {
+                try {
+                    stream.close();
+                } catch (IOException ignored) {
+                }
+            }
             throw new IllegalStateException("Could not load goalkeeper atlas", exception);
         }
     }
