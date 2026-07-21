@@ -4,7 +4,7 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 public final class GamePreferences {
-    private static final String FILE = "snap_penalty_preferences";
+    private static final String FILE = "snap_penalty_safe_preferences_v2";
     private static final String KEY_AIM_SENSITIVITY = "aim_sensitivity";
     private static final String KEY_SNAP_SENSITIVITY = "snap_sensitivity";
     private static final String KEY_MIC_ENABLED = "mic_enabled";
@@ -20,7 +20,7 @@ public final class GamePreferences {
     }
 
     public static int getAimSensitivity(Context context) {
-        return prefs(context).getInt(KEY_AIM_SENSITIVITY, 5);
+        return prefs(context).getInt(KEY_AIM_SENSITIVITY, 8);
     }
 
     public static void setAimSensitivity(Context context, int value) {
@@ -36,7 +36,7 @@ public final class GamePreferences {
     }
 
     public static boolean isMicEnabled(Context context) {
-        return prefs(context).getBoolean(KEY_MIC_ENABLED, true);
+        return prefs(context).getBoolean(KEY_MIC_ENABLED, false);
     }
 
     public static void setMicEnabled(Context context, boolean enabled) {
