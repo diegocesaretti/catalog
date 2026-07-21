@@ -14,36 +14,23 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-/** Alternates the two supplied 8-bit tracks while the game is in the foreground. */
+/** Alternates compact 20-second loops from the two supplied 8-bit tracks. */
 public final class BackgroundMusic {
     private static final String[][] TRACK_ASSETS = {
             {
                     "music_tub_v5_00.b64",
                     "music_tub_v5_01.b64",
-                    "music_tub_v5_02.b64",
-                    "music_tub_v5_03.b64",
-                    "music_tub_v5_04.b64",
-                    "music_tub_v5_05.b64",
-                    "music_tub_v5_06.b64",
-                    "music_tub_v5_07.b64",
-                    "music_tub_v5_08.b64",
-                    "music_tub_v5_09.b64",
-                    "music_tub_v5_10.b64",
-                    "music_tub_v5_11.b64"
+                    "music_tub_v5_02.b64"
             },
             {
                     "music_song2_v5_00.b64",
                     "music_song2_v5_01.b64",
-                    "music_song2_v5_02.b64",
-                    "music_song2_v5_03.b64",
-                    "music_song2_v5_04.b64",
-                    "music_song2_v5_05.b64",
-                    "music_song2_v5_06.b64"
+                    "music_song2_v5_02.b64"
             }
     };
     private static final String[] CACHE_NAMES = {
-            "tubthumping_8bit_v5.m4a",
-            "song2_8bit_v5.m4a"
+            "tubthumping_8bit_loop_v5.m4a",
+            "song2_8bit_loop_v5.m4a"
     };
 
     private final Context context;
@@ -153,7 +140,7 @@ public final class BackgroundMusic {
 
     private File ensureDecodedTrack(int index) throws IOException {
         File file = new File(context.getCacheDir(), CACHE_NAMES[index]);
-        if (file.isFile() && file.length() > 100_000L) {
+        if (file.isFile() && file.length() > 10_000L) {
             return file;
         }
 
