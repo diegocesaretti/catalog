@@ -4,15 +4,15 @@ import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Rect;
-import android.util.Base64;
+import android.util.Base64InputStream;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
+/** Atlas generated from the user-supplied PNG, which already has real alpha transparency. */
 public final class SpriteAtlas {
     private static SpriteAtlas instance;
 
@@ -20,15 +20,24 @@ public final class SpriteAtlas {
     private final Map<String, Rect> rects = new HashMap<>();
 
     private SpriteAtlas(Context context) {
-        atlas = loadBitmapFromBase64Asset(context, "sprite_atlas_compact.b64");
-        rects.put("idle", new Rect(4, 4, 43, 79));
-        rects.put("crouch", new Rect(47, 4, 94, 74));
-        rects.put("low_right", new Rect(98, 4, 187, 47));
-        rects.put("high_right", new Rect(191, 4, 261, 70));
-        rects.put("arms_up", new Rect(265, 4, 306, 79));
-        rects.put("catch_front", new Rect(310, 4, 345, 77));
-        rects.put("celebrate", new Rect(349, 4, 417, 72));
-        rects.put("ball", new Rect(421, 4, 442, 27));
+        atlas = loadBase64Png(context, "goalkeeper_atlas_v5_00.b64");
+        atlas.setHasAlpha(true);
+
+        rects.put("idle", new Rect(8, 8, 81, 150));
+        rects.put("crouch", new Rect(89, 8, 176, 138));
+        rects.put("low_right", new Rect(184, 8, 348, 88));
+        rects.put("high_right", new Rect(356, 8, 484, 134));
+        rects.put("low_left", new Rect(492, 8, 670, 128));
+        rects.put("high_left", new Rect(678, 8, 830, 134));
+        rects.put("arms_up", new Rect(838, 8, 916, 146));
+        rects.put("catch_front", new Rect(924, 8, 990, 143));
+        rects.put("kneel", new Rect(8, 158, 106, 265));
+        rects.put("point", new Rect(114, 158, 253, 274));
+        rects.put("celebrate", new Rect(261, 158, 405, 284));
+        rects.put("ball1", new Rect(413, 158, 452, 201));
+        rects.put("ball2", new Rect(460, 158, 524, 200));
+        rects.put("ball3", new Rect(532, 158, 592, 200));
+        rects.put("ball4", new Rect(600, 158, 661, 192));
     }
 
     public static synchronized SpriteAtlas get(Context context) {
@@ -44,36 +53,29 @@ public final class SpriteAtlas {
 
     public Rect getRect(String name) {
         Rect rect = rects.get(name);
-        if (rect == null) {
-            return rects.get("idle");
-        }
-        return rect;
+        return rect != null ? rect : rects.get("idle");
     }
 
-    private static Bitmap loadBitmapFromBase64Asset(Context context, String assetName) {
-        try (InputStream inputStream = context.getAssets().open(assetName)) {
-            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-            byte[] buffer = new byte[4096];
-            int count;
-            while ((count = inputStream.read(buffer)) != -1) {
-                outputStream.write(buffer, 0, count);
+    private static Bitmap loadBase64Png(Context context, String assetName) {
+        try (InputStream encoded = context.getAssets().open(assetName);
+             Base64InputStream decoded = new Base64InputStream(encoded, android.util.Base64.DEFAULT);
+             ByteArrayOutputStream bytes = new ByteArrayOutputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = decoded.read(buffer)) != -1) {
+                bytes.write(buffer, 0, read);
             }
-            String base64 = new String(outputStream.toByteArray(), StandardCharsets.US_ASCII)
-                    .replace("\n", "")
-                    .replace("\r", "");
-            byte[] pngBytes = Base64.decode(base64, Base64.DEFAULT);
+            byte[] png = bytes.toByteArray();
             BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
             options.inScaled = false;
-            Bitmap bitmap = BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes.length, options);
+            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            Bitmap bitmap = BitmapFactory.decodeByteArray(png, 0, png.length, options);
             if (bitmap == null) {
-                throw new IllegalStateException("Could not decode sprite atlas");
+                throw new IllegalStateException("Could not decode goalkeeper atlas");
             }
-            bitmap.setHasAlpha(true);
-            bitmap.setPremultiplied(true);
             return bitmap;
         } catch (IOException exception) {
-            throw new IllegalStateException("Could not load sprite atlas", exception);
+            throw new IllegalStateException("Could not load goalkeeper atlas", exception);
         }
     }
 }
