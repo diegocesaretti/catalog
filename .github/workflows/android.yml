@@ -39,15 +39,15 @@ jobs:
       - name: Prepare release files
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/app-debug.apk release/SnapPenaltyWear-0.1.0-debug.apk
-          sha256sum release/SnapPenaltyWear-0.1.0-debug.apk > release/SnapPenaltyWear-0.1.0-debug.apk.sha256
-          zip -qr release/SnapPenaltyWear-0.1.0-source.zip . \
+          cp app/build/outputs/apk/debug/app-debug.apk release/SnapPenaltyWear-0.5.0-safe-debug.apk
+          sha256sum release/SnapPenaltyWear-0.5.0-safe-debug.apk > release/SnapPenaltyWear-0.5.0-safe-debug.apk.sha256
+          zip -qr release/SnapPenaltyWear-0.5.0-safe-source.zip . \
             -x '.git/*' 'release/*' '*/build/*' '.gradle/*'
-          sha256sum release/SnapPenaltyWear-0.1.0-source.zip > release/SnapPenaltyWear-0.1.0-source.zip.sha256
+          sha256sum release/SnapPenaltyWear-0.5.0-safe-source.zip > release/SnapPenaltyWear-0.5.0-safe-source.zip.sha256
 
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
-          name: SnapPenaltyWear-0.1.0
+          name: SnapPenaltyWear-0.5.0-safe
           path: release/*
           if-no-files-found: error
