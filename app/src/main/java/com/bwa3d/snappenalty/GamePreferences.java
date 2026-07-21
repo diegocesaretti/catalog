@@ -20,7 +20,7 @@ public final class GamePreferences {
     }
 
     public static int getAimSensitivity(Context context) {
-        return prefs(context).getInt(KEY_AIM_SENSITIVITY, 5);
+        return prefs(context).getInt(KEY_AIM_SENSITIVITY, 8);
     }
 
     public static void setAimSensitivity(Context context, int value) {
@@ -36,7 +36,6 @@ public final class GamePreferences {
     }
 
     public static boolean isMicEnabled(Context context) {
-        // Safe default: the game must boot before asking for microphone access.
         return prefs(context).getBoolean(KEY_MIC_ENABLED, false);
     }
 
