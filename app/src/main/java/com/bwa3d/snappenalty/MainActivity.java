@@ -16,6 +16,7 @@ public final class MainActivity extends Activity implements GameView.Host {
     private GameView gameView;
     private WristAimController wristAimController;
     private SnapDetector snapDetector;
+    private BackgroundMusic backgroundMusic;
     private boolean bootFailed;
 
     @Override
@@ -29,15 +30,17 @@ public final class MainActivity extends Activity implements GameView.Host {
             setContentView(gameView);
 
             wristAimController = new WristAimController(this, gameView::setAim);
+            backgroundMusic = new BackgroundMusic(this);
+
             if (!wristAimController.isAvailable()) {
-                gameView.showTemporaryMessage("NO ROTATION SENSOR • TAP TO SHOOT", 3_000L);
+                gameView.showTemporaryMessage("NO ROTATION SENSOR • TAP TO SHOOT", 3000L);
             }
 
             String previousCrash = CrashReporter.consumeLastCrash(this);
             if (previousCrash != null && !previousCrash.isEmpty()) {
-                gameView.showTemporaryMessage("RECOVERED FROM: " + previousCrash, 5_000L);
+                gameView.showTemporaryMessage("RECOVERED FROM: " + previousCrash, 5000L);
             } else {
-                gameView.showTemporaryMessage("SAFE BUILD • TAP SHOOTING READY", 1_800L);
+                gameView.showTemporaryMessage("MAESTRO AIM • READY", 1800L);
             }
         } catch (Throwable error) {
             showBootError(error);
@@ -56,21 +59,27 @@ public final class MainActivity extends Activity implements GameView.Host {
             if (wristAimController != null) {
                 wristAimController.start();
             }
+            if (backgroundMusic != null) {
+                backgroundMusic.onResume();
+            }
 
-            // Do not request microphone permission during launch. This keeps boot independent
-            // from the watch's permission UI and audio stack.
+            // Permission is still requested only from Settings, keeping boot reliable.
             if (GamePreferences.isMicEnabled(this)) {
-                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    gameView.postDelayed(this::startMicrophoneSafely, 700L);
+                if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                        == PackageManager.PERMISSION_GRANTED) {
+                    gameView.postDelayed(this::startMicrophoneSafely, 650L);
                 } else {
                     gameView.setMicrophoneListening(false);
-                    gameView.showTemporaryMessage("MIC OFF • ENABLE IT IN SETTINGS", 2_500L);
+                    gameView.showTemporaryMessage("MIC OFF • ENABLE IT IN SETTINGS", 2500L);
                 }
             } else {
                 gameView.setMicrophoneListening(false);
+                if (backgroundMusic != null) {
+                    backgroundMusic.setMicrophoneActive(false);
+                }
             }
         } catch (Throwable error) {
-            gameView.showTemporaryMessage("INPUT START ERROR • TAP STILL WORKS", 3_000L);
+            gameView.showTemporaryMessage("INPUT START ERROR • TAP STILL WORKS", 3000L);
         }
     }
 
@@ -79,6 +88,9 @@ public final class MainActivity extends Activity implements GameView.Host {
         stopMicrophone();
         if (wristAimController != null) {
             wristAimController.stop();
+        }
+        if (backgroundMusic != null) {
+            backgroundMusic.onPause();
         }
         super.onPause();
     }
@@ -89,6 +101,10 @@ public final class MainActivity extends Activity implements GameView.Host {
         if (wristAimController != null) {
             wristAimController.stop();
         }
+        if (backgroundMusic != null) {
+            backgroundMusic.release();
+            backgroundMusic = null;
+        }
         super.onDestroy();
     }
 
@@ -98,7 +114,7 @@ public final class MainActivity extends Activity implements GameView.Host {
             startActivity(new Intent(this, SettingsActivity.class));
         } catch (Throwable error) {
             if (gameView != null) {
-                gameView.showTemporaryMessage("SETTINGS COULD NOT OPEN", 2_000L);
+                gameView.showTemporaryMessage("SETTINGS COULD NOT OPEN", 2000L);
             }
         }
     }
@@ -119,7 +135,8 @@ public final class MainActivity extends Activity implements GameView.Host {
             gameView.setMicrophoneListening(false);
             return;
         }
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
             gameView.setMicrophoneListening(false);
             return;
         }
@@ -147,20 +164,32 @@ public final class MainActivity extends Activity implements GameView.Host {
                         public void onDetectorError(String message) {
                             if (gameView != null) {
                                 gameView.setMicrophoneListening(false);
-                                gameView.showTemporaryMessage("MIC ERROR • TAP STILL WORKS", 2_500L);
+                                gameView.showTemporaryMessage(
+                                        "MIC ERROR • TAP STILL WORKS",
+                                        2500L
+                                );
+                            }
+                            if (backgroundMusic != null) {
+                                backgroundMusic.setMicrophoneActive(false);
                             }
                         }
                     }
             );
             boolean started = snapDetector.start();
             gameView.setMicrophoneListening(started);
+            if (backgroundMusic != null) {
+                backgroundMusic.setMicrophoneActive(started);
+            }
             if (!started) {
-                gameView.showTemporaryMessage("MIC UNAVAILABLE • TAP STILL WORKS", 2_500L);
+                gameView.showTemporaryMessage("MIC UNAVAILABLE • TAP STILL WORKS", 2500L);
             }
         } catch (Throwable error) {
             snapDetector = null;
             gameView.setMicrophoneListening(false);
-            gameView.showTemporaryMessage("MIC START FAILED • TAP STILL WORKS", 2_500L);
+            if (backgroundMusic != null) {
+                backgroundMusic.setMicrophoneActive(false);
+            }
+            gameView.showTemporaryMessage("MIC START FAILED • TAP STILL WORKS", 2500L);
         }
     }
 
@@ -171,8 +200,10 @@ public final class MainActivity extends Activity implements GameView.Host {
             try {
                 detector.stop();
             } catch (Throwable ignored) {
-                // The app must never crash while releasing the microphone.
             }
+        }
+        if (backgroundMusic != null) {
+            backgroundMusic.setMicrophoneActive(false);
         }
         if (gameView != null) {
             gameView.setAudioLevel(0f);
@@ -181,15 +212,17 @@ public final class MainActivity extends Activity implements GameView.Host {
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != REQUEST_RECORD_AUDIO || gameView == null) {
             return;
         }
-        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+        if (grantResults.length > 0
+                && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             gameView.postDelayed(this::startMicrophoneSafely, 250L);
         } else {
-            gameView.showTemporaryMessage("MIC DENIED • TAP STILL WORKS", 2_200L);
+            gameView.showTemporaryMessage("MIC DENIED • TAP STILL WORKS", 2200L);
         }
     }
 
